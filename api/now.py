@@ -1,5 +1,6 @@
 """Tarjeta "sonando ahora" de Spotify, con la estética del perfil (RHLM x Chrome Hearts)."""
 import base64
+import calendar
 import html
 import json
 import os
@@ -12,11 +13,18 @@ from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 
-from art import DIM, GRAY, LINE, RED, W, WHITE, anton, mono, svg_doc, title  # noqa: E402
+from art import DIM, GRAY, LINE, RED, W, WHITE, anton, cross, mono, svg_doc, title  # noqa: E402
 
 CID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 REFRESH = os.environ.get("SPOTIFY_REFRESH_TOKEN", "")
+
+TEXTOS = {
+    "es": dict(playing="Sonando", last="Lo último", live="EN VIVO", paused="EN PAUSA", ago="HACE {n} {u}",
+               error="SPOTIFY NO DISPONIBLE"),
+    "en": dict(playing="Now Playing", last="Last Played", live="LIVE", paused="PAUSED", ago="{n} {u} AGO",
+               error="SPOTIFY UNAVAILABLE"),
+}
 
 
 def access_token():
@@ -77,14 +85,13 @@ def mmss(ms):
     return f"{s // 60}:{s % 60:02d}"
 
 
-def hace(iso):
-    t = time.mktime(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
-    m = int((time.time() - t) // 60)
+def hace(iso, tx):
+    m = int((time.time() - calendar.timegm(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S"))) // 60)
     if m < 60:
-        return f"HACE {max(m, 1)} MIN"
+        return tx["ago"].format(n=max(m, 1), u="MIN")
     if m < 1440:
-        return f"HACE {m // 60} H"
-    return f"HACE {m // 1440} D"
+        return tx["ago"].format(n=m // 60, u="H")
+    return tx["ago"].format(n=m // 1440, u="D")
 
 
 def vinyl(cx, cy, r, spinning):
@@ -100,17 +107,18 @@ def vinyl(cx, cy, r, spinning):
             f'fill="#fff" opacity="0.05"/></g>')
 
 
-def render(info):
+def render(info, lang="es", accent=None):
+    txt = TEXTOS.get(lang, TEXTOS["es"])
     H, x0, y_title = 440, 70, 132
     playing = info["playing"]
-    g, t, wt = title("Sonando" if playing else "Lo último", y_title, H)
+    g, t, wt = title(txt["playing"] if playing else txt["last"], y_title, H)
     out = [t]
     if playing:
         out.append(f'<circle cx="{x0 + wt + 30}" cy="{y_title - 6}" r="6" fill="{RED}">'
                    f'<animate attributeName="opacity" values="1;0.2;1" dur="1.4s" repeatCount="indefinite"/></circle>')
-        tag, _ = mono.path("EN VIVO", 15, x0 + wt + 46, y_title, RED, tracking=3)
+        tag, _ = mono.path(txt["live"], 15, x0 + wt + 46, y_title, RED, tracking=3)
     else:
-        tag, _ = mono.path(hace(info["played_at"]) if info["played_at"] else "EN PAUSA", 15, x0 + wt + 26, y_title, DIM,
+        tag, _ = mono.path(hace(info["played_at"], txt) if info["played_at"] else txt["paused"], 15, x0 + wt + 26, y_title, DIM,
                            tracking=3)
     sp = "SPOTIFY"
     right, _ = mono.path(sp, 15, W - x0 - mono.width(sp, 15, 3), y_title, DIM, tracking=3)
@@ -122,6 +130,9 @@ def render(info):
         out.append(f'<rect x="{x0 + 4}" y="{cy0 + 6}" width="{cs}" height="{cs}" fill="#000" opacity="0.6"/>')
         out.append(f'<image href="{info["cover"]}" x="{x0}" y="{cy0}" width="{cs}" height="{cs}" preserveAspectRatio="xMidYMid slice"/>')
         out.append(f'<rect x="{x0}" y="{cy0}" width="{cs}" height="{cs}" fill="none" stroke="url(#chromeFrame)" stroke-width="2"/>')
+    else:  # sin carátula: cuadro negro con la cruz cromada
+        out.append(f'<rect x="{x0}" y="{cy0}" width="{cs}" height="{cs}" fill="#141414" stroke="url(#chromeFrame)" stroke-width="2"/>')
+        out.append(cross(x0 + cs / 2, cy0 + cs * 0.42, cs * 0.2, "chromeFrame"))
 
     tx = x0 + cs + 150
     max_w = W - x0 - tx
@@ -161,18 +172,28 @@ def render(info):
     t2, _ = mono.path(total, 13, tx + bw - mono.width(total, 13, 1), by + 28, DIM, tracking=1)
     out += [t1, t2]
 
-    label = f'{"Sonando" if playing else "Lo último"}: {info["name"]} — {info["artists"]}'
-    return svg_doc(H, html.escape(label), "".join(out), extra_defs=g)
+    label = f'{txt["playing"] if playing else txt["last"]}: {info["name"]} — {info["artists"]}'
+    svg = svg_doc(H, html.escape(label), "".join(out), extra_defs=g)
+    return svg.replace(RED, f"#{accent}") if accent else svg
+
+
+def accent_param(q):
+    """?accent=1db954 cambia el rojo por otro color (hex de 6 dígitos, sin #)."""
+    a = q.get("accent", [""])[0].lstrip("#").lower()
+    return a if re.fullmatch(r"[0-9a-f]{6}", a) else None
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        lang = q.get("lang", ["es"])[0]
         try:
-            body, code = render(track_info()), 200
-        except Exception as e:  # la tarjeta nunca debe romper el README
-            body, code = svg_doc(200, "Spotify no disponible", mono.path("SPOTIFY NO DISPONIBLE", 18, 70, 110, DIM)[0]), 200
+            body = render(track_info(), lang, accent_param(q))
+        except Exception as e:  # la tarjeta nunca debe romper el README donde se muestra
+            msg = TEXTOS.get(lang, TEXTOS["es"])["error"]
+            body = svg_doc(200, msg, mono.path(msg, 18, 70, 110, DIM)[0])
             print("error:", repr(e))
-        self.send_response(code)
+        self.send_response(200)
         self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate")
         self.end_headers()
