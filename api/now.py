@@ -3,6 +3,7 @@ import base64
 import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -68,7 +69,7 @@ def fit(font, text, size, max_w, tracking=0.0):
         return text
     while text and font.width(text + "...", size, tracking) > max_w:
         text = text[:-1]
-    return text.rstrip() + "..."
+    return text.rstrip(" .,-([") + "..."
 
 
 def mmss(ms):
@@ -124,7 +125,9 @@ def render(info):
 
     tx = x0 + cs + 150
     max_w = W - x0 - tx
-    name = fit(anton, info["name"].upper(), 56, max_w - 60, 1)
+    # los artistas ya van abajo: el "(feat. ...)" o "(with ...)" sobra en el título
+    clean_name = re.sub(r"\s*[\(\[](feat\.?|ft\.?|with)\s[^\)\]]*[\)\]]", "", info["name"], flags=re.IGNORECASE)
+    name = fit(anton, clean_name.upper(), 56, max_w - 60, 1)
     n, wn = anton.path(name, 56, tx, 262, WHITE, tracking=1)
     out.append(n)
     a, _ = mono.path(fit(mono, info["artists"], 20, max_w), 20, tx, 302, GRAY)
