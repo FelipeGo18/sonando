@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/now.py": {
+      "includeFiles": "{lib,fonts}/**",
+      "maxDuration": 10
+    }
+  }
+}
